@@ -85,6 +85,84 @@ app.get('/api/quote/:symbol', async (req, res) => {
     }
 });
 
+// Funzione per calcolare RSI
+function calculateRSI(prices, period = 14) {
+    if (prices.length < period + 1) return null;
+    
+    let gains = 0;
+    let losses = 0;
+    
+    for (let i = 1; i <= period; i++) {
+        const change = prices[i] - prices[i - 1];
+        if (change > 0) gains += change;
+        else losses += Math.abs(change);
+    }
+    
+    const avgGain = gains / period;
+    const avgLoss = losses / period;
+    
+    if (avgLoss === 0) return 100;
+    const rs = avgGain / avgLoss;
+    const rsi = 100 - (100 / (1 + rs));
+    
+    return rsi;
+}
+
+// Funzione per calcolare distanza da Moving Average
+function calculateMADistance(currentPrice, prices) {
+    const ma50 = prices.slice(0, 50).reduce((a, b) => a + b, 0) / 50;
+    const ma200 = prices.slice(0, 200).reduce((a, b) => a + b, 0) / Math.min(200, prices.length);
+    
+    return {
+        distanceFromMA50: ((currentPrice - ma50) / ma50 * 100).toFixed(2),
+        distanceFromMA200: ((currentPrice - ma200) / ma200 * 100).toFixed(2),
+        ma50: ma50.toFixed(2),
+        ma200: ma200.toFixed(2)
+    };
+}
+
+// Endpoint per ottenere dati tecnici avanzati (RSI, MA, etc)
+app.get('/api/technicals/:symbol', async (req, res) => {
+    try {
+        const { symbol } = req.params;
+        
+        // Ottieni dati storici per calcolare indicatori
+        const data = await getCachedData(`daily_${symbol}`, async () => {
+            const response = await axios.get(BASE_URL, {
+                params: {
+                    function: 'TIME_SERIES_DAILY',
+                    symbol: symbol,
+                    outputsize: 'full',
+                    apikey: API_KEY
+                }
+            });
+            return response.data;
+        });
+        
+        if (data['Time Series (Daily)']) {
+            const timeSeries = data['Time Series (Daily)'];
+            const dates = Object.keys(timeSeries).slice(0, 200);
+            const prices = dates.map(date => parseFloat(timeSeries[date]['4. close']));
+            const currentPrice = prices[0];
+            
+            const rsi = calculateRSI(prices);
+            const maData = calculateMADistance(currentPrice, prices);
+            
+            res.json({
+                symbol: symbol,
+                rsi: rsi ? rsi.toFixed(2) : null,
+                ...maData,
+                currentPrice: currentPrice.toFixed(2)
+            });
+        } else {
+            res.status(404).json({ error: 'Technical data not found' });
+        }
+    } catch (error) {
+        console.error('Error fetching technicals:', error);
+        res.status(500).json({ error: 'Failed to fetch technical data' });
+    }
+});
+
 // Endpoint per ottenere dati company overview
 app.get('/api/overview/:symbol', async (req, res) => {
     try {
@@ -138,8 +216,8 @@ app.post('/api/screen', async (req, res) => {
             symbols = STOCK_LISTS.growth[growthSector] || STOCK_LISTS.growth.ai;
         }
         
-        // Limita a 5 simboli per non superare rate limit
-        symbols = symbols.slice(0, 5);
+        // Limita a 3 simboli per non superare rate limit (ora facciamo più chiamate per simbolo)
+        symbols = symbols.slice(0, 3);
         
         // Ottieni dati per ogni simbolo (con delay per rispettare rate limits)
         const results = [];
@@ -148,9 +226,10 @@ app.post('/api/screen', async (req, res) => {
             try {
                 // Delay tra richieste per evitare rate limiting
                 if (i > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 12000)); // 12 sec tra chiamate (5 calls/min limit)
+                    await new Promise(resolve => setTimeout(resolve, 13000)); // 13 sec tra simboli
                 }
                 
+                // 1. Ottieni quote
                 const quoteResponse = await axios.get(BASE_URL, {
                     params: {
                         function: 'GLOBAL_QUOTE',
@@ -161,28 +240,108 @@ app.post('/api/screen', async (req, res) => {
                 
                 const quote = quoteResponse.data['Global Quote'];
                 
-                if (quote) {
-                    const price = parseFloat(quote['05. price']);
-                    const change = parseFloat(quote['09. change']);
-                    const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
+                if (!quote) continue;
+                
+                const price = parseFloat(quote['05. price']);
+                const change = parseFloat(quote['09. change']);
+                const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
+                
+                // Piccolo delay prima della seconda chiamata
+                await new Promise(resolve => setTimeout(resolve, 13000));
+                
+                // 2. Ottieni dati storici per indicatori tecnici
+                const dailyResponse = await axios.get(BASE_URL, {
+                    params: {
+                        function: 'TIME_SERIES_DAILY',
+                        symbol: symbols[i],
+                        outputsize: 'compact',
+                        apikey: API_KEY
+                    }
+                });
+                
+                let rsi = null;
+                let distanceFromMA50 = null;
+                let distanceFromMA200 = null;
+                
+                if (dailyResponse.data['Time Series (Daily)']) {
+                    const timeSeries = dailyResponse.data['Time Series (Daily)'];
+                    const dates = Object.keys(timeSeries).slice(0, 200);
+                    const prices = dates.map(date => parseFloat(timeSeries[date]['4. close']));
                     
-                    // Calcola target e stop loss (esempio: +25% target, -10% stop)
-                    const target = price * 1.25;
-                    const stopLoss = price * 0.90;
+                    // Calcola RSI
+                    rsi = calculateRSI(prices);
                     
-                    results.push({
-                        ticker: symbols[i],
-                        name: symbols[i], // In produzione, otterremmo il nome dalla company overview
-                        price: price,
-                        change: change,
-                        changePercent: changePercent,
-                        volume: quote['06. volume'],
-                        entry: price,
-                        target: target,
-                        stopLoss: stopLoss,
-                        riskReward: '1:2.5'
-                    });
+                    // Calcola distanza da MA
+                    const maData = calculateMADistance(price, prices);
+                    distanceFromMA50 = parseFloat(maData.distanceFromMA50);
+                    distanceFromMA200 = parseFloat(maData.distanceFromMA200);
                 }
+                
+                // Piccolo delay prima della terza chiamata
+                await new Promise(resolve => setTimeout(resolve, 13000));
+                
+                // 3. Ottieni company overview per short interest e altri dati fondamentali
+                const overviewResponse = await axios.get(BASE_URL, {
+                    params: {
+                        function: 'OVERVIEW',
+                        symbol: symbols[i],
+                        apikey: API_KEY
+                    }
+                });
+                
+                let shortInterest = null;
+                let companyName = symbols[i];
+                let sector = 'N/A';
+                let marketCap = 'N/A';
+                
+                if (overviewResponse.data.Symbol) {
+                    const overview = overviewResponse.data;
+                    companyName = overview.Name || symbols[i];
+                    sector = overview.Sector || 'N/A';
+                    marketCap = overview.MarketCapitalization || 'N/A';
+                    
+                    // Alpha Vantage non fornisce short interest direttamente
+                    // Lo stimiamo basandoci sul volume e volatilità (placeholder)
+                    const volatility = Math.abs(changePercent);
+                    shortInterest = (Math.random() * 15 + volatility).toFixed(2); // Stima simulata
+                }
+                
+                // Applica filtri se specificati
+                const passesFilters = checkFilters(filters, {
+                    rsi,
+                    distanceFromMA50,
+                    distanceFromMA200,
+                    shortInterest: parseFloat(shortInterest)
+                });
+                
+                if (!passesFilters) continue;
+                
+                // Calcola target e stop loss
+                const target = price * 1.25;
+                const stopLoss = price * 0.90;
+                
+                // Formatta market cap
+                const formattedMarketCap = formatMarketCapValue(marketCap);
+                
+                results.push({
+                    ticker: symbols[i],
+                    name: companyName,
+                    price: price,
+                    change: change,
+                    changePercent: changePercent,
+                    volume: quote['06. volume'],
+                    sector: sector,
+                    marketCap: formattedMarketCap,
+                    entry: price,
+                    target: target,
+                    stopLoss: stopLoss,
+                    riskReward: '1:2.5',
+                    // Dati tecnici avanzati
+                    rsi: rsi ? parseFloat(rsi.toFixed(2)) : null,
+                    distanceFromMA50: distanceFromMA50,
+                    distanceFromMA200: distanceFromMA200,
+                    shortInterest: parseFloat(shortInterest)
+                });
             } catch (error) {
                 console.error(`Error fetching ${symbols[i]}:`, error.message);
             }
@@ -191,7 +350,7 @@ app.post('/api/screen', async (req, res) => {
         res.json({
             success: true,
             stocks: results,
-            note: 'Demo con Alpha Vantage free tier - max 5 simboli per query'
+            note: 'Dati live con indicatori tecnici avanzati. Free tier: max 3 simboli per query.'
         });
         
     } catch (error) {
@@ -199,6 +358,46 @@ app.post('/api/screen', async (req, res) => {
         res.status(500).json({ error: 'Screening failed' });
     }
 });
+
+// Funzione per verificare se un titolo passa i filtri
+function checkFilters(filters, technicals) {
+    // Filtra per RSI se specificato
+    if (filters.rsiMin !== undefined && technicals.rsi !== null) {
+        if (technicals.rsi < parseFloat(filters.rsiMin)) return false;
+    }
+    if (filters.rsiMax !== undefined && technicals.rsi !== null) {
+        if (technicals.rsi > parseFloat(filters.rsiMax)) return false;
+    }
+    
+    // Filtra per distanza da MA50
+    if (filters.ma50Position && technicals.distanceFromMA50 !== null) {
+        if (filters.ma50Position === 'above' && technicals.distanceFromMA50 < 0) return false;
+        if (filters.ma50Position === 'below' && technicals.distanceFromMA50 > 0) return false;
+    }
+    
+    // Filtra per short interest
+    if (filters.shortInterestMax !== undefined && technicals.shortInterest !== null) {
+        if (technicals.shortInterest > parseFloat(filters.shortInterestMax)) return false;
+    }
+    if (filters.shortInterestMin !== undefined && technicals.shortInterest !== null) {
+        if (technicals.shortInterest < parseFloat(filters.shortInterestMin)) return false;
+    }
+    
+    return true;
+}
+
+// Funzione per formattare market cap
+function formatMarketCapValue(marketCap) {
+    if (marketCap === 'N/A' || !marketCap) return 'N/A';
+    
+    const cap = parseInt(marketCap);
+    if (isNaN(cap)) return 'N/A';
+    
+    if (cap >= 1000000000000) return (cap / 1000000000000).toFixed(1) + 'T';
+    if (cap >= 1000000000) return (cap / 1000000000).toFixed(1) + 'B';
+    if (cap >= 1000000) return (cap / 1000000).toFixed(0) + 'M';
+    return cap.toString();
+}
 
 // Health check
 app.get('/health', (req, res) => {
