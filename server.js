@@ -223,18 +223,15 @@ app.post('/api/screen', async (req, res) => {
             symbols = STOCK_LISTS.growth[growthSector] || STOCK_LISTS.growth.ai;
         }
         
-        // Limita a 3 simboli per non superare rate limit (ora facciamo più chiamate per simbolo)
+        // Limita a 3 simboli per non superare rate limit
         symbols = symbols.slice(0, 3);
         
-        // Ottieni dati per ogni simbolo (con delay per rispettare rate limits)
+        // Ottieni dati per ogni simbolo VELOCEMENTE (senza delay - rischiamo rate limit ma proviamo!)
         const results = [];
         
         for (let i = 0; i < symbols.length; i++) {
             try {
-                // Delay tra richieste per evitare rate limiting
-                if (i > 0) {
-                    await new Promise(resolve => setTimeout(resolve, 13000)); // 13 sec tra simboli
-                }
+                // NESSUN DELAY - andiamo veloci!
                 
                 // 1. Ottieni quote
                 const quoteResponse = await axios.get(BASE_URL, {
@@ -253,8 +250,8 @@ app.post('/api/screen', async (req, res) => {
                 const change = parseFloat(quote['09. change']);
                 const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
                 
-                // Piccolo delay prima della seconda chiamata
-                await new Promise(resolve => setTimeout(resolve, 13000));
+                // Piccolo delay solo tra quote e daily (500ms invece di 13 sec)
+                await new Promise(resolve => setTimeout(resolve, 500));
                 
                 // 2. Ottieni dati storici per indicatori tecnici
                 const dailyResponse = await axios.get(BASE_URL, {
@@ -284,8 +281,8 @@ app.post('/api/screen', async (req, res) => {
                     distanceFromMA200 = parseFloat(maData.distanceFromMA200);
                 }
                 
-                // Piccolo delay prima della terza chiamata
-                await new Promise(resolve => setTimeout(resolve, 13000));
+                // Piccolo delay prima della terza chiamata (500ms)
+                await new Promise(resolve => setTimeout(resolve, 500));
                 
                 // 3. Ottieni company overview per short interest e altri dati fondamentali
                 const overviewResponse = await axios.get(BASE_URL, {
@@ -358,7 +355,7 @@ app.post('/api/screen', async (req, res) => {
         res.json({
             success: true,
             stocks: results,
-            note: 'Dati live con indicatori tecnici avanzati. Free tier: max 3 simboli per query.'
+            note: '⚡ MODALITÀ VELOCE: Dati live con indicatori tecnici. Risposta in ~10 secondi!'
         });
         
     } catch (error) {
