@@ -18,18 +18,25 @@ app.use(express.json());
 const STOCK_LISTS = {
     swing: {
         tech: ['NVDA', 'AAPL', 'MSFT', 'META', 'GOOGL', 'AMD', 'TSLA'],
-        finance: ['JPM', 'BAC', 'GS', 'MS', 'WFC'],
-        healthcare: ['JNJ', 'UNH', 'PFE', 'ABBV', 'TMO'],
-        energy: ['XOM', 'CVX', 'COP', 'SLB'],
-        consumer: ['AMZN', 'TSLA', 'NKE', 'SBUX', 'MCD']
+        finance: ['JPM', 'BAC', 'GS', 'MS', 'WFC', 'C', 'BLK'],
+        healthcare: ['JNJ', 'UNH', 'PFE', 'ABBV', 'TMO', 'MRK', 'LLY'],
+        energy: ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'MPC'],
+        consumer: ['AMZN', 'TSLA', 'NKE', 'SBUX', 'MCD', 'HD', 'WMT'],
+        industrials: ['CAT', 'BA', 'GE', 'HON', 'UPS', 'MMM'],
+        realestate: ['AMT', 'PLD', 'CCI', 'EQIX', 'PSA'],
+        utilities: ['NEE', 'DUK', 'SO', 'D', 'AEP'],
+        materials: ['LIN', 'APD', 'ECL', 'SHW', 'NEM']
     },
     growth: {
-        ai: ['PLTR', 'AI', 'SOUN', 'BBAI'],
+        ai: ['PLTR', 'AI', 'SOUN', 'BBAI', 'PATH'],
         cyber: ['CRWD', 'PANW', 'ZS', 'FTNT', 'S'],
-        fintech: ['SQ', 'PYPL', 'UPST', 'AFRM', 'SOFI'],
-        saas: ['SNOW', 'DDOG', 'NET', 'MDB', 'DOCN'],
-        cleantech: ['ENPH', 'SEDG', 'RUN', 'FSLR'],
-        biotech: ['MRNA', 'BNTX', 'NVAX', 'CRSP']
+        fintech: ['SQ', 'PYPL', 'UPST', 'AFRM', 'SOFI', 'COIN'],
+        saas: ['SNOW', 'DDOG', 'NET', 'MDB', 'DOCN', 'HUBS'],
+        cleantech: ['ENPH', 'SEDG', 'RUN', 'FSLR', 'TSLA'],
+        biotech: ['MRNA', 'BNTX', 'NVAX', 'CRSP', 'EDIT'],
+        ecommerce: ['SHOP', 'ETSY', 'W', 'CHWY', 'DASH'],
+        gaming: ['RBLX', 'U', 'TTWO', 'EA', 'DKNG'],
+        semiconductor: ['NVDA', 'AMD', 'AVGO', 'QCOM', 'MRVL']
     }
 };
 
@@ -308,6 +315,7 @@ app.post('/api/screen', async (req, res) => {
                 
                 // Applica filtri se specificati
                 const passesFilters = checkFilters(filters, {
+                    price,
                     rsi,
                     distanceFromMA50,
                     distanceFromMA200,
@@ -360,27 +368,42 @@ app.post('/api/screen', async (req, res) => {
 });
 
 // Funzione per verificare se un titolo passa i filtri
-function checkFilters(filters, technicals) {
-    // Filtra per RSI se specificato
-    if (filters.rsiMin !== undefined && technicals.rsi !== null) {
-        if (technicals.rsi < parseFloat(filters.rsiMin)) return false;
-    }
-    if (filters.rsiMax !== undefined && technicals.rsi !== null) {
-        if (technicals.rsi > parseFloat(filters.rsiMax)) return false;
+function checkFilters(filters, stock) {
+    // Filtra per prezzo massimo (solo per growth)
+    if (filters.maxPrice !== undefined && stock.price > filters.maxPrice) {
+        return false;
     }
     
-    // Filtra per distanza da MA50
-    if (filters.ma50Position && technicals.distanceFromMA50 !== null) {
-        if (filters.ma50Position === 'above' && technicals.distanceFromMA50 < 0) return false;
-        if (filters.ma50Position === 'below' && technicals.distanceFromMA50 > 0) return false;
+    // Filtra per RSI se specificato
+    if (filters.rsiMin !== undefined && stock.rsi !== null) {
+        if (stock.rsi < parseFloat(filters.rsiMin)) return false;
+    }
+    if (filters.rsiMax !== undefined && stock.rsi !== null) {
+        if (stock.rsi > parseFloat(filters.rsiMax)) return false;
+    }
+    
+    // Filtra per distanza da MA50/200
+    if (filters.ma50Position && stock.distanceFromMA50 !== null && stock.distanceFromMA200 !== null) {
+        if (filters.ma50Position === 'above_both' && (stock.distanceFromMA50 < 0 || stock.distanceFromMA200 < 0)) {
+            return false;
+        }
+        if (filters.ma50Position === 'above_ma50' && stock.distanceFromMA50 < 0) {
+            return false;
+        }
+        if (filters.ma50Position === 'below_ma50' && stock.distanceFromMA50 > 0) {
+            return false;
+        }
+        if (filters.ma50Position === 'between' && (stock.distanceFromMA50 < 0 || stock.distanceFromMA200 > 0)) {
+            return false;
+        }
     }
     
     // Filtra per short interest
-    if (filters.shortInterestMax !== undefined && technicals.shortInterest !== null) {
-        if (technicals.shortInterest > parseFloat(filters.shortInterestMax)) return false;
+    if (filters.shortInterestMax !== undefined && stock.shortInterest !== null) {
+        if (stock.shortInterest > parseFloat(filters.shortInterestMax)) return false;
     }
-    if (filters.shortInterestMin !== undefined && technicals.shortInterest !== null) {
-        if (technicals.shortInterest < parseFloat(filters.shortInterestMin)) return false;
+    if (filters.shortInterestMin !== undefined && stock.shortInterest !== null) {
+        if (stock.shortInterest < parseFloat(filters.shortInterestMin)) return false;
     }
     
     return true;
